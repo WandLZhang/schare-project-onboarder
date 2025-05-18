@@ -7,13 +7,35 @@ import {
   CircularProgress,
   List,
   ListItem,
-  ListItemText
+  ListItemText,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  TextField
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../utils/AuthContext';
-import { GCPProject, listProjects } from '../../services/projects';
-import { listProjectsForBillingAccount } from '../../services/billing';
+import { 
+  GCPProject, 
+  listProjects, 
+  createProject, 
+  checkProjectIdAvailability,
+  enableApisForProject,
+  deleteProject,
+  ESSENTIAL_APIS
+} from '../../services/projects';
+import { 
+  listProjectsForBillingAccount, 
+  linkBillingAccount, 
+  testBillingAccountPermissions,
+  getAdministratorEmail,
+  checkIfUserIsBillingAdmin,
+  getTokenInfo,
+  getBillingAccountIamPolicy
+} from '../../services/billing';
+import { checkRequiredScopes, forceReauthentication } from '../../services/auth';
 import { GridContainer, GridItem, StyledPaper } from '../../components/PageGrids';
 
 // Interface for project billing info
@@ -32,10 +54,146 @@ const ProjectsListPage: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  
+  // State for project creation dialog
+  const [openCreateProjectDialog, setOpenCreateProjectDialog] = useState<boolean>(false);
+  const [newProjectId, setNewProjectId] = useState<string>('');
+  const [createProjectError, setCreateProjectError] = useState<string | null>(null);
+  const [isCreatingProject, setIsCreatingProject] = useState<boolean>(false);
+  const [hasVerifiedPermissions, setHasVerifiedPermissions] = useState<boolean>(false);
+  const [hasLinkPermission, setHasLinkPermission] = useState<boolean | null>(null);
+  const [checkingPermissions, setCheckingPermissions] = useState<boolean>(false);
+  const [adminStatus, setAdminStatus] = useState<{
+    isAdmin: boolean;
+    userEmail: string | null;
+    checking: boolean;
+    billingAdmins: string[];
+    loadingAdmins: boolean;
+    showAdmins: boolean;
+    iamPolicyError: string | null;
+  }>({
+    isAdmin: false,
+    userEmail: null,
+    checking: false,
+    billingAdmins: [],
+    loadingAdmins: false,
+    showAdmins: false,
+    iamPolicyError: null
+  });
 
   // Decode URI component if needed
   const decodedBillingAccountName = billingAccountName ? decodeURIComponent(billingAccountName) : '';
 
+  // Function to fetch all billing administrators
+  const fetchBillingAdministrators = async () => {
+    if (!accessToken || !decodedBillingAccountName) {
+      console.error('No access token or billing account name available');
+      return;
+    }
+    
+    setAdminStatus(prev => ({ ...prev, loadingAdmins: true, iamPolicyError: null }));
+    
+    try {
+      console.log(`Fetching IAM policy for ${decodedBillingAccountName} via Cloud Function...`);
+      const iamPolicyData = await getBillingAccountIamPolicy(accessToken, decodedBillingAccountName);
+      
+      setAdminStatus(prev => ({ 
+        ...prev, 
+        billingAdmins: iamPolicyData.billingAdminMembers || [],
+        loadingAdmins: false,
+        showAdmins: true
+      }));
+      
+      console.log('Successfully fetched billing admins:', iamPolicyData.billingAdminMembers);
+      
+      // Get user information
+      const tokenInfo = await getTokenInfo(accessToken);
+      if (tokenInfo?.email) {
+        console.log(`Current user email: ${tokenInfo.email}`);
+      }
+      
+    } catch (error) {
+      console.error('Error fetching billing administrators:', error);
+      setAdminStatus(prev => ({ 
+        ...prev, 
+        loadingAdmins: false,
+        iamPolicyError: 'Failed to fetch billing administrators. The Cloud Function may not be deployed yet.'
+      }));
+    }
+  };
+
+  // Check for administrator status
+  useEffect(() => {
+    const checkAdminStatus = async () => {
+      if (accessToken && decodedBillingAccountName) {
+        setAdminStatus(prev => ({ ...prev, checking: true }));
+        try {
+          // Get user email - this function already checks admin status internally
+          const adminEmail = await getAdministratorEmail(accessToken, decodedBillingAccountName);
+          
+          // If adminEmail is returned, user is an admin
+          const isAdmin = adminEmail !== null;
+          
+          setAdminStatus(prev => ({
+            ...prev,
+            isAdmin,
+            userEmail: adminEmail,
+            checking: false
+          }));
+          
+        } catch (error) {
+          console.error('Error checking admin status:', error);
+          setAdminStatus(prev => ({
+            ...prev,
+            isAdmin: false,
+            userEmail: null,
+            checking: false
+          }));
+        }
+      }
+    };
+    
+    checkAdminStatus();
+  }, [accessToken, decodedBillingAccountName]);
+
+  // For future debugging if needed
+  useEffect(() => {
+    // Placeholder for future debugging needs
+  }, [accessToken]);
+  
+  // Check if the user has required permissions for this billing account
+  useEffect(() => {
+    const verifyBillingPermissions = async () => {
+      if (accessToken && decodedBillingAccountName) {
+        setCheckingPermissions(true);
+        try {
+          // Check if the user can create associations with this billing account
+          const permissions = await testBillingAccountPermissions(
+            accessToken,
+            decodedBillingAccountName,
+            ['billing.resourceAssociations.create']
+          );
+          
+          const hasPermission = permissions.includes('billing.resourceAssociations.create');
+          setHasLinkPermission(hasPermission);
+          
+          setHasVerifiedPermissions(true);
+        } catch (error) {
+          console.error('Error checking billing permissions:', error);
+          setHasLinkPermission(false);
+          setHasVerifiedPermissions(true);
+        } finally {
+          setCheckingPermissions(false);
+        }
+      }
+    };
+    
+    verifyBillingPermissions();
+  }, [accessToken, decodedBillingAccountName]);
+
+  // Track if we've already fetched projects for this billing account
+  const [hasFetchedProjects, setHasFetchedProjects] = useState<string | null>(null);
+  
   useEffect(() => {
     const fetchProjects = async () => {
       if (!accessToken) {
@@ -49,8 +207,13 @@ const ProjectsListPage: React.FC = () => {
         return;
       }
       
-      console.log(`Fetching projects for billing account: ${decodedBillingAccountName}`);
+      // Skip if we're already fetched projects for this billing account
+      if (hasFetchedProjects === decodedBillingAccountName) {
+        return;
+      }
+      
       try {
+        setHasFetchedProjects(decodedBillingAccountName);
         setLoading(true);
         
         // First get project billing info from the billing account
@@ -119,6 +282,243 @@ const ProjectsListPage: React.FC = () => {
     }
   };
 
+  const handleOpenIamHelp = () => {
+    // Open GCP console IAM page for the billing account
+    window.open(`https://console.cloud.google.com/billing/${decodedBillingAccountName.replace('billingAccounts/', '')}?tab=permissions`, '_blank');
+  };
+
+  // Helper function to clean up project if any step fails after creation
+  const cleanupFailedProject = async (
+    accessToken: string, 
+    projectId: string | null, 
+    failureStep: string
+  ): Promise<void> => {
+    if (!projectId) return;
+    
+    console.log(`Attempting to clean up project ${projectId} due to ${failureStep}...`);
+    try {
+      await deleteProject(accessToken, projectId);
+      console.log(`Project ${projectId} successfully deleted.`);
+      setCreateProjectError(prev => 
+        `${prev ? prev + ' ' : ''}Project ${projectId} was deleted due to ${failureStep}.`
+      );
+    } catch (deleteError: any) {
+      console.error(`Failed to automatically delete project ${projectId}:`, deleteError);
+      setCreateProjectError(prev => 
+        `${prev ? prev + ' ' : ''}Failed to delete project ${projectId} after ${failureStep}: ${deleteError.message || 'unknown error'}. Please delete it manually.`
+      );
+    }
+  };
+
+  const handleCreateProject = async () => {
+    // Reset error state
+    setCreateProjectError(null);
+    
+    // Variable to track the created project's ID for cleanup if needed
+    let createdProjectId: string | null = null;
+    
+    // Validate project ID format - must start with a letter, end with a letter or number, contain only lowercase letters, numbers, and hyphens
+    const projectIdRegex = /^[a-z][a-z0-9-]*[a-z0-9]$/;
+    
+    // Check length requirement (6-30 characters)
+    if (newProjectId.length < 6 || newProjectId.length > 30) {
+      setCreateProjectError('Project ID must be between 6 and 30 characters');
+      return;
+    }
+    
+    // Check character requirement and pattern
+    if (!projectIdRegex.test(newProjectId)) {
+      if (newProjectId.endsWith('-')) {
+        setCreateProjectError('Project ID cannot end with a hyphen');
+      } else if (!/^[a-z]/.test(newProjectId)) {
+        setCreateProjectError('Project ID must start with a letter');
+      } else {
+        setCreateProjectError('Project ID can only contain lowercase letters, numbers, and hyphens');
+      }
+      return;
+    }
+    
+    // Check for restricted strings
+    const restrictedStrings = ['google', 'ssl', 'undefined', 'null'];
+    for (const restricted of restrictedStrings) {
+      if (newProjectId.includes(restricted)) {
+        setCreateProjectError(`Project ID cannot contain the restricted string "${restricted}"`);
+        return;
+      }
+    }
+    
+    // If validation passes, proceed with project creation
+    try {
+      setIsCreatingProject(true);
+      
+      console.log(`Starting project creation workflow for ID: ${newProjectId}`);
+      
+      // Check if project ID is available (not in use or previously used)
+      console.log(`Checking if project ID ${newProjectId} is available...`);
+      const isAvailable = await checkProjectIdAvailability(accessToken || '', newProjectId);
+      if (!isAvailable) {
+        setCreateProjectError('Project ID is already in use or was previously used');
+        setIsCreatingProject(false);
+        return;
+      }
+      console.log(`Project ID ${newProjectId} is available, proceeding with creation`);
+      
+      // 1. Create the project
+      console.log(`Creating project ${newProjectId}...`);
+      let createdProject;
+      try {
+        createdProject = await createProject(
+          accessToken || '', 
+          newProjectId,
+          newProjectId // Using project ID as name for simplicity
+        );
+        createdProjectId = newProjectId; // Store the ID in case we need to clean up
+        console.log(`Project created successfully:`, createdProject);
+        
+        // Add a delay to allow IAM permissions to propagate
+        // This helps avoid "Project not found or permission denied" errors
+        console.log(`Waiting 10 seconds for IAM permissions to propagate for project ${newProjectId}...`);
+        await new Promise(resolve => setTimeout(resolve, 10000)); // 10-second delay
+        console.log(`Delay completed, proceeding with API enablement for ${newProjectId}`);
+        
+      } catch (projectCreationError: any) {
+        console.error('Project creation failed:', projectCreationError);
+        // Extract the most useful error message
+        let errorMessage = 'Failed to create project.';
+        if (projectCreationError.message) {
+          errorMessage += ` Error: ${projectCreationError.message}`;
+        }
+        setCreateProjectError(errorMessage);
+        setIsCreatingProject(false);
+        return; // Stop here and don't attempt subsequent steps
+      }
+      
+      // 2. Enable APIs for the project (including Vertex AI)
+      console.log(`Enabling essential APIs for project ${newProjectId}...`);
+      try {
+        await enableApisForProject(accessToken || '', newProjectId, ESSENTIAL_APIS);
+        console.log(`Successfully enabled APIs for project ${newProjectId}`);
+      } catch (apiError: any) {
+        console.error('API enablement failed:', apiError);
+        let errorMessage = 'Project was created but APIs could not be enabled.';
+        if (apiError.message) {
+          errorMessage += ` Error: ${apiError.message}`;
+        }
+        setCreateProjectError(errorMessage);
+        
+        // Clean up the project since API enablement failed
+        await cleanupFailedProject(accessToken || '', createdProjectId, 'API enablement failure');
+        setIsCreatingProject(false);
+        return;
+      }
+      
+      // 3. Pre-check billing permissions
+      console.log(`Verifying billing permissions for ${decodedBillingAccountName}...`);
+      try {
+        const permissions = await testBillingAccountPermissions(
+          accessToken || '',
+          decodedBillingAccountName,
+          ['billing.resourceAssociations.create']
+        );
+        
+        const hasPermission = permissions.includes('billing.resourceAssociations.create');
+        if (!hasPermission) {
+          console.error('User lacks billing.resourceAssociations.create permission');
+          setCreateProjectError(`You don't have permission to link this project to the billing account. You need the 'billing.resourceAssociations.create' permission on ${decodedBillingAccountName}.`);
+          
+          // Clean up the project since the user can't link billing
+          await cleanupFailedProject(accessToken || '', createdProjectId, 'billing permission check failure');
+          setIsCreatingProject(false);
+          return;
+        }
+        console.log('User has the required billing permissions');
+      } catch (permissionError: any) {
+        console.error('Error checking billing permissions:', permissionError);
+        let errorMessage = 'Failed to verify billing permissions.';
+        if (permissionError.message) {
+          errorMessage += ` Error: ${permissionError.message}`;
+        }
+        setCreateProjectError(errorMessage);
+        
+        // Clean up the project since permission check failed
+        await cleanupFailedProject(accessToken || '', createdProjectId, 'billing permission check failure');
+        setIsCreatingProject(false);
+        return;
+      }
+      
+      // 4. Link the project to billing account
+      console.log(`Linking project ${newProjectId} to billing account ${decodedBillingAccountName}...`);
+      try {
+        await linkBillingAccount(
+          accessToken || '',
+          newProjectId,
+          decodedBillingAccountName
+        );
+        console.log(`Successfully linked project ${newProjectId} to billing account ${decodedBillingAccountName}`);
+      } catch (billingError: any) {
+        console.error('Billing account link failed:', billingError);
+        
+        // Note: The linkBillingAccountDirect function (called by linkBillingAccount) 
+        // already attempts to delete the project on failure. But we'll check the error message
+        // and provide a specific message about it.
+        
+        let errorMessage = 'Failed to link billing account.';
+        if (billingError.message) {
+          errorMessage = billingError.message; // Use the full message which includes deletion status
+        }
+        
+        setCreateProjectError(errorMessage);
+        setIsCreatingProject(false);
+        return;
+      }
+      
+      // Successfully completed all steps
+      console.log('Project created, APIs enabled, and billing account linked successfully:', createdProject);
+      
+      // Close dialog and reset form
+      setOpenCreateProjectDialog(false);
+      setNewProjectId('');
+      
+      // Refresh the projects list to include the new project
+      console.log('Refreshing project list...');
+      if (accessToken && decodedBillingAccountName) {
+        setLoading(true);
+        const projectBillingInfoList = await listProjectsForBillingAccount(
+          accessToken, 
+          decodedBillingAccountName
+        );
+        
+        // Extract project IDs
+        const projectIds = projectBillingInfoList
+          .filter((info: ProjectBillingInfo) => info.billingEnabled)
+          .map((info: ProjectBillingInfo) => {
+            const parts = info.name.split('/');
+            return parts.length > 1 ? parts[1] : '';
+          })
+          .filter(id => id);
+        
+        const allProjects = await listProjects(accessToken);
+        const filteredProjects = allProjects.filter(project => 
+          projectIds.includes(project.projectId)
+        );
+        
+        setProjects(filteredProjects);
+        setLoading(false);
+        console.log('Project list refreshed successfully');
+      }
+      
+    } catch (error: any) {
+      console.error('Unexpected error in project creation workflow:', error);
+      let errorMessage = 'An unexpected error occurred.';
+      if (error.message) {
+        errorMessage += ` ${error.message}`;
+      }
+      setCreateProjectError(errorMessage);
+    } finally {
+      setIsCreatingProject(false);
+    }
+  };
+
   if (loading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '300px' }}>
@@ -184,10 +584,104 @@ const ProjectsListPage: React.FC = () => {
               <Button 
                 variant="contained" 
                 color="primary"
-                onClick={() => {/* Navigate to create project */}}
+                onClick={() => setOpenCreateProjectDialog(true)}
+                disabled={hasLinkPermission === false}
               >
                 Create New Project
               </Button>
+              
+              {hasVerifiedPermissions && hasLinkPermission === false && (
+                <Box sx={{ mt: 2 }}>
+                  <Paper sx={{ p: 2, bgcolor: 'warning.light' }}>
+                    <Typography variant="body2" sx={{ mb: 1 }}>
+                      You don't have permission to link projects to this billing account.
+                      You need the "Billing Account Administrator" or "Billing Account User" IAM role.
+                      {/* No longer showing email sensitivity warnings */}
+                    </Typography>
+                    
+                    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                      <Button 
+                        variant="outlined" 
+                        color="primary" 
+                        onClick={handleOpenIamHelp}
+                        size="small"
+                      >
+                        Open Billing Account Permissions
+                      </Button>
+                      
+                      <Button
+                        variant="outlined"
+                        color="info"
+                        size="small"
+                        onClick={fetchBillingAdministrators}
+                        disabled={adminStatus.loadingAdmins}
+                      >
+                        {adminStatus.loadingAdmins ? 'Loading...' : 'List Administrators'}
+                      </Button>
+                      
+                      {adminStatus.isAdmin && (
+                        <Button
+                          variant="outlined"
+                          color="success"
+                          size="small"
+                          onClick={() => {}}
+                          disabled
+                        >
+                          Admin ✓
+                        </Button>
+                      )}
+                    </Box>
+                    
+                    {/* Display the administrators */}
+                    {adminStatus.showAdmins && (
+                      <Box sx={{ mt: 2, bgcolor: '#f8f9fa', p: 1, borderRadius: 1 }}>
+                        <Typography variant="subtitle2" gutterBottom>
+                          Billing Account Administrators:
+                        </Typography>
+                        
+                        {adminStatus.loadingAdmins ? (
+                          <CircularProgress size={20} />
+                        ) : adminStatus.billingAdmins.length > 0 ? (
+                          <Box component="ul" sx={{ m: 0, pl: 2 }}>
+                            {adminStatus.billingAdmins.map((admin, index) => {
+                              // Extract email from "user:email@example.com" format
+                              const email = admin.startsWith('user:') ? admin.substring(5) : admin;
+                              
+                              // Check if this admin matches the current user's email
+                              const isCurrentUser = adminStatus.userEmail && 
+                                admin.toLowerCase() === `user:${adminStatus.userEmail}`.toLowerCase();
+                              
+                              return (
+                                <Box 
+                                  component="li" 
+                                  key={index}
+                                  sx={{ 
+                                    fontFamily: 'monospace', 
+                                    fontSize: '0.875rem',
+                                    color: isCurrentUser ? 'primary.main' : 'text.primary',
+                                    fontWeight: isCurrentUser ? 'bold' : 'normal'
+                                  }}
+                                >
+                                  {email}
+                                  {isCurrentUser && ' (you)'}
+                                </Box>
+                              );
+                            })}
+                          </Box>
+                        ) : (
+                          <Typography color="text.secondary">No administrators found.</Typography>
+                        )}
+                        
+                        {adminStatus.iamPolicyError && (
+                          <Typography color="error" variant="caption">
+                            {adminStatus.iamPolicyError}
+                          </Typography>
+                        )}
+                      </Box>
+                    )}
+                  </Paper>
+                </Box>
+              )}
               
               <Button
                 variant="contained"
@@ -198,6 +692,64 @@ const ProjectsListPage: React.FC = () => {
                 Continue
               </Button>
             </Box>
+
+            {/* Create Project Dialog */}
+            <Dialog 
+              open={openCreateProjectDialog} 
+              onClose={() => setOpenCreateProjectDialog(false)}
+              fullWidth
+              maxWidth="sm"
+            >
+              <DialogTitle>
+                Create New Google Cloud Project
+                {hasLinkPermission === false && (
+                  <Typography variant="caption" color="error" sx={{ display: 'block', mt: 1 }}>
+                    Warning: You don't have permission to link projects to this billing account.
+                    Project creation may fail.
+                  </Typography>
+                )}
+              </DialogTitle>
+              <DialogContent>
+                <Box sx={{ my: 2 }}>
+                  <TextField
+                    fullWidth
+                    label="Project ID"
+                    value={newProjectId}
+                    onChange={(e) => setNewProjectId(e.target.value.toLowerCase())}
+                    margin="normal"
+                    helperText="Project ID must be 6-30 characters, start with a letter, not end with a hyphen, and contain only lowercase letters, numbers, and hyphens"
+                    error={Boolean(createProjectError)}
+                    disabled={isCreatingProject}
+                    autoFocus
+                  />
+                  {createProjectError && (
+                    <Typography color="error" variant="body2" sx={{ mt: 1 }}>
+                      {createProjectError}
+                    </Typography>
+                  )}
+                </Box>
+              </DialogContent>
+              <DialogActions>
+                <Button 
+                  onClick={() => {
+                    setOpenCreateProjectDialog(false);
+                    setNewProjectId('');
+                    setCreateProjectError(null);
+                  }}
+                  disabled={isCreatingProject}
+                >
+                  Cancel
+                </Button>
+                <Button 
+                  onClick={handleCreateProject} 
+                  variant="contained" 
+                  color="primary"
+                  disabled={isCreatingProject || !newProjectId}
+                >
+                  {isCreatingProject ? 'Creating...' : 'Create'}
+                </Button>
+              </DialogActions>
+            </Dialog>
           </StyledPaper>
         </GridItem>
       </GridContainer>

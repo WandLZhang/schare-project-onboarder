@@ -21,6 +21,7 @@ const SelectBillingAccountPage: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedBillingAccount, setSelectedBillingAccount] = useState<BillingAccount | null>(null);
+  const [hasClickedCreateBilling, setHasClickedCreateBilling] = useState<boolean>(false);
 
   useEffect(() => {
     const fetchBillingAccounts = async () => {
@@ -112,7 +113,24 @@ const SelectBillingAccountPage: React.FC = () => {
               </List>
             )}
 
-            <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 2 }}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 2 }}>
+              {hasClickedCreateBilling ? (
+                <Typography variant="body2" color="text.secondary">
+                  Refresh page to update billing accounts
+                </Typography>
+              ) : (
+                <Button
+                  variant="outlined"
+                  color="primary"
+                  href="https://console.cloud.google.com/billing?inv=1&invt=Abxn-w"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setHasClickedCreateBilling(true)}
+                >
+                  Create New Billing Account
+                </Button>
+              )}
+
               <Button
                 variant="contained"
                 color="primary"

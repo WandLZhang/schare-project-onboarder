@@ -1,5 +1,13 @@
 import { getCurrentUser } from './auth';
 
+// List of essential APIs to enable for new projects
+export const ESSENTIAL_APIS = [
+  'serviceusage.googleapis.com',     // Service Usage API (needed to enable other APIs)
+  'cloudresourcemanager.googleapis.com', // Cloud Resource Manager API
+  'cloudbilling.googleapis.com',     // Cloud Billing API
+  'aiplatform.googleapis.com',       // Vertex AI API
+];
+
 // Interface for GCP Project
 export interface GCPProject {
   projectId: string;
@@ -39,23 +47,47 @@ export const createProject = async (
   name: string
 ): Promise<GCPProject> => {
   try {
-    const response = await fetch('https://cloudresourcemanager.googleapis.com/v1/projects', {
+    // Log the request details
+    console.log('Creating project with:', { projectId, name });
+    
+    // Using v3 endpoint
+    const requestBody = {
+      projectId,
+      displayName: name,
+    };
+    
+    console.log('Project creation request:', JSON.stringify(requestBody));
+    
+    const response = await fetch('https://cloudresourcemanager.googleapis.com/v3/projects', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        projectId,
-        name
-      })
+      body: JSON.stringify(requestBody)
     });
-
+    
+    // Log the raw response
+    const responseText = await response.text();
+    console.log('Project creation raw response:', responseText);
+    
     if (!response.ok) {
-      throw new Error(`Error creating project: ${response.status} ${response.statusText}`);
+      console.error('Project creation failed:', response.status, response.statusText, responseText);
+      throw new Error(`Error creating project: ${response.status} ${response.statusText} - ${responseText}`);
     }
-
-    return await response.json();
+    
+    // Parse the response text
+    const responseData = responseText ? JSON.parse(responseText) : {};
+    console.log('Project created successfully:', responseData);
+    
+    // Convert v3 response to match GCPProject interface
+    return {
+      projectId,
+      name,
+      projectNumber: responseData.name || '',
+      createTime: responseData.createTime || new Date().toISOString(),
+      lifecycleState: responseData.state || 'ACTIVE'
+    };
   } catch (error) {
     console.error('Error creating project:', error);
     throw error;
@@ -72,6 +104,79 @@ export const checkProjectIdAvailability = async (
     return !projects.some(project => project.projectId === projectId);
   } catch (error) {
     console.error('Error checking project ID availability:', error);
+    throw error;
+  }
+};
+
+// Function to enable specified APIs for a project
+export const enableApisForProject = async (
+  accessToken: string,
+  projectId: string,
+  apiIdentifiers: string[] = ESSENTIAL_APIS
+): Promise<void> => {
+  try {
+    console.log(`Enabling APIs for project ${projectId}:`, apiIdentifiers);
+    
+    // Process each API in sequence to avoid rate limits and ensure proper ordering
+    for (const apiIdentifier of apiIdentifiers) {
+      console.log(`Enabling API: ${apiIdentifier}`);
+      
+      const response = await fetch(`https://serviceusage.googleapis.com/v1/projects/${projectId}/services/${apiIdentifier}:enable`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({}) // Empty body is fine for the enable endpoint
+      });
+      
+      // Read the response as text first for better error logging
+      const responseText = await response.text();
+      
+      if (!response.ok) {
+        console.error(`Failed to enable API ${apiIdentifier}:`, response.status, response.statusText, responseText);
+        throw new Error(`Error enabling API ${apiIdentifier}: ${response.status} ${response.statusText} - ${responseText}`);
+      }
+      
+      console.log(`Successfully enabled API: ${apiIdentifier}`);
+    }
+    
+    console.log(`All APIs enabled successfully for project ${projectId}`);
+  } catch (error) {
+    console.error(`Error enabling APIs for project ${projectId}:`, error);
+    throw error;
+  }
+};
+
+// Function to delete a project
+export const deleteProject = async (
+  accessToken: string,
+  projectId: string
+): Promise<void> => {
+  try {
+    console.log(`Attempting to delete project ${projectId}`);
+    
+    // Call the Cloud Resource Manager API to delete the project
+    const response = await fetch(`https://cloudresourcemanager.googleapis.com/v1/projects/${projectId}`, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    // Read the response as text for better error logging
+    const responseText = await response.text();
+    
+    if (!response.ok) {
+      console.error(`Failed to delete project ${projectId}:`, response.status, response.statusText, responseText);
+      throw new Error(`Error deleting project: ${response.status} ${response.statusText} - ${responseText}`);
+    }
+    
+    console.log(`Successfully initiated deletion of project ${projectId}`);
+    // Note: Project deletion is asynchronous and might take some time to complete on Google's end
+  } catch (error) {
+    console.error(`Error deleting project ${projectId}:`, error);
     throw error;
   }
 };

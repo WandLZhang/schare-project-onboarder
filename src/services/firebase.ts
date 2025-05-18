@@ -23,6 +23,10 @@ const googleProvider = new GoogleAuthProvider();
 // Add GCP API scopes needed for the application
 googleProvider.addScope('https://www.googleapis.com/auth/cloud-platform');
 googleProvider.addScope('https://www.googleapis.com/auth/cloud-billing');
+// Ensures we get a fresh token each time
+googleProvider.setCustomParameters({
+  prompt: 'consent'
+});
 // Removed cloud-identity scope due to authorization issues
 
 export { app, analytics, auth, googleProvider };

@@ -1,3 +1,5 @@
+import { deleteProject } from './projects';
+
 // Interface for GCP Billing Account
 export interface BillingAccount {
   name: string;
@@ -6,10 +8,9 @@ export interface BillingAccount {
   masterBillingAccount?: string;
 }
 
-// For debugging purposes
-export const debugTokenInfo = async (accessToken: string): Promise<any> => {
+// Get token info when needed
+export const getTokenInfo = async (accessToken: string): Promise<any> => {
   try {
-    // This endpoint helps debug token info
     const response = await fetch('https://www.googleapis.com/oauth2/v1/tokeninfo', {
       method: 'GET',
       headers: {
@@ -24,7 +25,7 @@ export const debugTokenInfo = async (accessToken: string): Promise<any> => {
     
     return await response.json();
   } catch (error) {
-    console.error('Error checking token info:', error);
+    console.error('Error getting token info:', error);
     return null;
   }
 };
@@ -34,11 +35,21 @@ interface TestIamPermissionsResponse {
   permissions: string[];
 }
 
+// Interface for IamPolicy
+interface IamPolicy {
+  version: number;
+  etag: string;
+  bindings: {
+    role: string;
+    members: string[];
+  }[];
+}
+
 // Function to list billing accounts
 export const listBillingAccounts = async (accessToken: string): Promise<BillingAccount[]> => {
   try {
     // Optional debug - log token info for debugging
-    const tokenInfo = await debugTokenInfo(accessToken);
+    const tokenInfo = await getTokenInfo(accessToken);
     console.log('Token info used for billing API:', tokenInfo);
     
     const response = await fetch('https://cloudbilling.googleapis.com/v1/billingAccounts', {
@@ -86,28 +97,155 @@ export const getBillingAccount = async (accessToken: string, name: string): Prom
   }
 };
 
-// Function to link a billing account to a project
-export const linkBillingAccount = async (
+// Function to get the Billing Account IAM Policy directly from Google Cloud Billing API
+export const getBillingAccountIamPolicy = async (
+  accessToken: string,
+  billingAccountName: string
+): Promise<{ policy: IamPolicy; billingAdminMembers: string[] }> => {
+  try {
+    console.log(`Fetching IAM policy for billing account: ${billingAccountName} directly from API`);
+    
+    const response = await fetch(`https://cloudbilling.googleapis.com/v1/${billingAccountName}:getIamPolicy`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({}) // Empty body is required for this API
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`Failed to get IAM policy: ${response.status} ${response.statusText}`, errorText);
+      throw new Error(`Error fetching IAM policy: ${response.status} ${response.statusText}`);
+    }
+
+    const policy = await response.json();
+    console.log('Retrieved IAM policy directly from API');
+    
+    // Extract billing admin members from policy
+    let billingAdminMembers: string[] = [];
+    if (policy.bindings) {
+      for (const binding of policy.bindings) {
+        if (binding.role === 'roles/billing.admin' || binding.role === 'roles/billing.administrator') {
+          billingAdminMembers = billingAdminMembers.concat(binding.members);
+        }
+      }
+    }
+    
+    // Log the billing administrators for debugging
+    if (billingAdminMembers.length > 0) {
+      console.log('Billing Administrator members:', billingAdminMembers);
+    } else {
+      console.log('No Billing Administrator members found in the policy');
+    }
+    
+    return {
+      policy,
+      billingAdminMembers
+    };
+  } catch (error) {
+    console.error(`Error getting IAM policy for ${billingAccountName}:`, error);
+    throw error;
+  }
+};
+
+// Function to link a billing account to a project - direct API call
+export const linkBillingAccountDirect = async (
   accessToken: string,
   projectId: string,
   billingAccountName: string
 ): Promise<void> => {
   try {
+    console.log(`Linking project ${projectId} to billing account ${billingAccountName} (direct API call)`);
+    
+    const requestBody = {
+      billingAccountName,
+      billingEnabled: true
+    };
+    
+    console.log('Billing link request body:', JSON.stringify(requestBody));
+    
+    // Debug token info to better understand permissions
+    const tokenInfo = await getTokenInfo(accessToken);
+    console.log('Token info for billing link operation:', tokenInfo);
+    
+    // Get email from token info for comparison
+    const userEmail = tokenInfo?.email || '';
+    console.log(`User email from token: ${userEmail}`);
+    
+    // Execute the billing linkage operation
     const response = await fetch(`https://cloudbilling.googleapis.com/v1/projects/${projectId}/billingInfo`, {
       method: 'PUT',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        billingAccountName,
-        billingEnabled: true
-      })
+      body: JSON.stringify(requestBody)
     });
 
+    // Get the response text for better error logging
+    const responseText = await response.text();
+    console.log(`Billing link response for project ${projectId}:`, response.status, responseText);
+    
+    
     if (!response.ok) {
-      throw new Error(`Error linking billing account: ${response.status} ${response.statusText}`);
+      let errorMessage: string;
+      
+      if (response.status === 403) {
+        // Provide guidance about permissions
+        const permissionMessage = `
+Permission denied (403) when linking project ${projectId} to billing account ${billingAccountName}.
+
+This typically means your Google account needs one of these IAM roles on the billing account:
+1. Billing Account Administrator
+2. Billing Account User (with additional Project Creator/Owner roles)
+`;
+        console.error(permissionMessage);
+        errorMessage = `Error linking billing account: Permission denied (403). You need Billing Account Administrator or Billing Account User role on ${billingAccountName}.`;
+      } else {
+        console.error(`Error linking project ${projectId} to billing account: ${response.status} ${response.statusText} - ${responseText}`);
+        errorMessage = `Error linking billing account: ${response.status} ${response.statusText}`;
+      }
+      
+      // Throw an error to be caught by the catch block below
+      throw new Error(errorMessage);
     }
+    
+    console.log(`Successfully linked project ${projectId} to billing account ${billingAccountName}`);
+  } catch (error: any) {
+    console.error('Error linking billing account (direct API call):', error);
+    
+    // Attempt to delete the project since billing linkage failed
+    console.log(`Billing linkage failed for project ${projectId}, attempting to delete the project...`);
+    try {
+      await deleteProject(accessToken, projectId);
+      console.log(`Successfully deleted project ${projectId} after billing linkage failure`);
+      
+      // Throw a composite error that includes the deletion information
+      throw new Error(`${error.message || 'Unknown billing linkage error'}. The project ${projectId} has been deleted due to billing linkage failure.`);
+    } catch (deleteError: any) {
+      console.error(`Failed to delete project ${projectId} after billing linkage failure:`, deleteError);
+      
+      // Throw a composite error that includes both the original error and deletion failure
+      throw new Error(`${error.message || 'Unknown billing linkage error'}. Additionally, failed to delete the project after billing linkage failure: ${deleteError.message || 'unknown error'}`);
+    }
+  }
+};
+
+// Function to link a billing account to a project (now using direct API call)
+export const linkBillingAccount = async (
+  accessToken: string,
+  projectId: string,
+  billingAccountName: string
+): Promise<void> => {
+  try {
+    console.log(`Linking project ${projectId} to billing account ${billingAccountName} via direct API call`);
+    
+    // Use the existing direct API function instead of the Cloud Function
+    await linkBillingAccountDirect(accessToken, projectId, billingAccountName);
+    
+    console.log(`Successfully linked project ${projectId} to billing account ${billingAccountName}`);
   } catch (error) {
     console.error('Error linking billing account:', error);
     throw error;
@@ -133,6 +271,63 @@ export const getProjectBillingInfo = async (accessToken: string, projectId: stri
   } catch (error) {
     console.error('Error getting project billing info:', error);
     throw error;
+  }
+};
+
+// Function to check if current user has Billing Account Admin role
+export const checkIfUserIsBillingAdmin = async (
+  accessToken: string,
+  billingAccountName: string
+): Promise<boolean> => {
+  try {
+    // These permissions are only available to Billing Account Administrators
+    const adminOnlyPermissions = [
+      'billing.accounts.update', 
+      'billing.accounts.getIamPolicy', 
+      'billing.accounts.setIamPolicy'
+    ];
+    
+    const grantedPermissions = await testBillingAccountPermissions(
+      accessToken,
+      billingAccountName,
+      adminOnlyPermissions
+    );
+    
+    // If user has all these permissions, they are likely a Billing Account Admin
+    const isAdmin = grantedPermissions.length === adminOnlyPermissions.length;
+    return isAdmin;
+  } catch (error) {
+    console.error('Error checking admin status:', error);
+    return false;
+  }
+};
+
+// Function to get user email from token 
+export const getAdministratorEmail = async (
+  accessToken: string,
+  billingAccountName: string
+): Promise<string | null> => {
+  try {
+    // Get email from token
+    const tokenInfo = await getTokenInfo(accessToken);
+    const currentUserEmail = tokenInfo?.email;
+    
+    if (!currentUserEmail) {
+      console.error('Could not get current user email from token');
+      return null;
+    }
+    
+    // Check if current user is an admin
+    const isAdmin = await checkIfUserIsBillingAdmin(accessToken, billingAccountName);
+    
+    if (isAdmin) {
+      return currentUserEmail;
+    } else {
+      return null;
+    }
+  } catch (error) {
+    console.error('Error getting administrators:', error);
+    return null;
   }
 };
 

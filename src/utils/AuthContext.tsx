@@ -36,24 +36,22 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged((user) => {
-      setUser(user);
+    const unsubscribe = onAuthStateChanged((firebaseUser) => {
+      setUser(firebaseUser);
       setLoading(false);
-      if (!user) {
-        // Clear token on logout
+      if (!firebaseUser) {
+        // User logged out, clear the token from React state and localStorage
         setAccessToken('');
         localStorage.removeItem(OAUTH_TOKEN_STORAGE_KEY);
-      } else if (!accessToken) {
-        // If user exists but no accessToken in state, try to get from localStorage
-        const storedToken = localStorage.getItem(OAUTH_TOKEN_STORAGE_KEY);
-        if (storedToken) {
-          setAccessToken(storedToken);
-        }
       }
+      // We no longer try to re-load the token from localStorage here.
+      // The token is set via:
+      // 1. Initial useState: localStorage.getItem(OAUTH_TOKEN_STORAGE_KEY) || ''
+      // 2. Explicitly via setOAuthToken() after a successful signInWithGoogle() or refreshToken()
     });
 
     return unsubscribe;
-  }, [accessToken]);
+  }, []); // Remove accessToken from the dependency array
 
   const setOAuthToken = (token: string) => {
     // Set token in state
