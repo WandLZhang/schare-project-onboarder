@@ -12,7 +12,8 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
-  TextField
+  TextField,
+  LinearProgress
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import { useParams, useNavigate } from 'react-router-dom';
@@ -63,6 +64,14 @@ const ProjectsListPage: React.FC = () => {
   const [hasVerifiedPermissions, setHasVerifiedPermissions] = useState<boolean>(false);
   const [hasLinkPermission, setHasLinkPermission] = useState<boolean | null>(null);
   const [checkingPermissions, setCheckingPermissions] = useState<boolean>(false);
+  
+  // State for project creation progress
+  const [creationProgress, setCreationProgress] = useState<number>(0);
+  const [currentCreationStep, setCurrentCreationStep] = useState<string>('');
+  
+  // State for project polling - check if newly created project appears in the list
+  const [isPollingForProject, setIsPollingForProject] = useState<boolean>(false);
+  const [pollingProjectId, setPollingProjectId] = useState<string | null>(null);
   const [adminStatus, setAdminStatus] = useState<{
     isAdmin: boolean;
     userEmail: string | null;
@@ -206,6 +215,70 @@ const ProjectsListPage: React.FC = () => {
 
   // Track if we've already fetched projects for this billing account
   const [hasFetchedProjects, setHasFetchedProjects] = useState<string | null>(null);
+  
+  // Poll for newly created project
+  useEffect(() => {
+    if (isPollingForProject && pollingProjectId && accessToken && decodedBillingAccountName) {
+      console.log(`Starting to poll for project ${pollingProjectId} to appear in the list...`);
+      
+      // Set up interval to check every 3 seconds
+      const intervalId = setInterval(async () => {
+        try {
+          console.log(`Checking if project ${pollingProjectId} has appeared in the list...`);
+          
+          // First get project billing info from the billing account
+          const projectBillingInfoList = await listProjectsForBillingAccount(
+            accessToken, 
+            decodedBillingAccountName
+          );
+          
+          // Extract project IDs
+          const projectIds = projectBillingInfoList
+            .filter((info: ProjectBillingInfo) => info.billingEnabled)
+            .map((info: ProjectBillingInfo) => {
+              const parts = info.name.split('/');
+              return parts.length > 1 ? parts[1] : '';
+            })
+            .filter(id => id);
+          
+          // Then get full project details
+          const allProjects = await listProjects(accessToken);
+          const filteredProjects = allProjects.filter(project => 
+            projectIds.includes(project.projectId)
+          );
+          
+          // Check if our project is in the list
+          const projectFound = filteredProjects.some(project => project.projectId === pollingProjectId);
+          
+          if (projectFound) {
+            console.log(`Project ${pollingProjectId} found in the list!`);
+            // Update projects state
+            setProjects(filteredProjects);
+            // Stop polling
+            setIsPollingForProject(false);
+            setPollingProjectId(null);
+            setLoading(false);
+            clearInterval(intervalId);
+          } else {
+            console.log(`Project ${pollingProjectId} not found yet, continuing to poll...`);
+          }
+        } catch (error) {
+          console.error('Error while polling for project:', error);
+          // Stop polling on error
+          setIsPollingForProject(false);
+          setPollingProjectId(null);
+          setLoading(false);
+          clearInterval(intervalId);
+        }
+      }, 3000); // Check every 3 seconds
+      
+      // Clean up the interval when the component unmounts or dependencies change
+      return () => {
+        console.log('Cleaning up polling interval');
+        clearInterval(intervalId);
+      };
+    }
+  }, [isPollingForProject, pollingProjectId, accessToken, decodedBillingAccountName]);
   
   useEffect(() => {
     const fetchProjects = async () => {
@@ -365,20 +438,27 @@ const ProjectsListPage: React.FC = () => {
     // If validation passes, proceed with project creation
     try {
       setIsCreatingProject(true);
+      setCreationProgress(0);
+      setCurrentCreationStep('Initializing project creation...');
       
       console.log(`Starting project creation workflow for ID: ${newProjectId}`);
       
       // Check if project ID is available (not in use or previously used)
+      setCurrentCreationStep('Checking if project ID is available...');
       console.log(`Checking if project ID ${newProjectId} is available...`);
       const isAvailable = await checkProjectIdAvailability(accessToken || '', newProjectId);
       if (!isAvailable) {
         setCreateProjectError('Project ID is already in use or was previously used');
         setIsCreatingProject(false);
+        setCreationProgress(0);
+        setCurrentCreationStep('');
         return;
       }
+      setCreationProgress(15);
       console.log(`Project ID ${newProjectId} is available, proceeding with creation`);
       
       // 1. Create the project
+      setCurrentCreationStep(`Creating project ${newProjectId}...`);
       console.log(`Creating project ${newProjectId}...`);
       let createdProject;
       try {
@@ -389,11 +469,14 @@ const ProjectsListPage: React.FC = () => {
         );
         createdProjectId = newProjectId; // Store the ID in case we need to clean up
         console.log(`Project created successfully:`, createdProject);
+        setCreationProgress(30);
         
         // Add a delay to allow IAM permissions to propagate
         // This helps avoid "Project not found or permission denied" errors
+        setCurrentCreationStep(`Waiting for IAM permissions to propagate...`);
         console.log(`Waiting 10 seconds for IAM permissions to propagate for project ${newProjectId}...`);
         await new Promise(resolve => setTimeout(resolve, 10000)); // 10-second delay
+        setCreationProgress(45);
         console.log(`Delay completed, proceeding with API enablement for ${newProjectId}`);
         
       } catch (projectCreationError: any) {
@@ -409,9 +492,11 @@ const ProjectsListPage: React.FC = () => {
       }
       
       // 2. Enable APIs for the project (including Vertex AI)
+      setCurrentCreationStep(`Enabling essential APIs for project ${newProjectId}...`);
       console.log(`Enabling essential APIs for project ${newProjectId}...`);
       try {
         await enableApisForProject(accessToken || '', newProjectId, ESSENTIAL_APIS);
+        setCreationProgress(60);
         console.log(`Successfully enabled APIs for project ${newProjectId}`);
       } catch (apiError: any) {
         console.error('API enablement failed:', apiError);
@@ -427,43 +512,21 @@ const ProjectsListPage: React.FC = () => {
         return;
       }
       
-      // 3. Pre-check billing permissions
-      console.log(`Verifying billing permissions for ${decodedBillingAccountName}...`);
-      try {
-        const permissions = await testBillingAccountPermissions(
-          accessToken || '',
-          decodedBillingAccountName,
-          ['billing.resourceAssociations.create']
-        );
-        
-        const hasPermission = permissions.includes('billing.resourceAssociations.create');
-        if (!hasPermission) {
-          console.error('User lacks billing.resourceAssociations.create permission');
-          // Clean up the project since the user can't link billing
-          await cleanupFailedProject(accessToken || '', createdProjectId, 'billing permission check failure');
-          setIsCreatingProject(false);
-          
-          // Force re-authentication instead of showing error message
-          console.log('Permissions issue detected during project creation. Forcing re-authentication...');
-          await forceReauthentication();
-          return;
-        }
-        console.log('User has the required billing permissions');
-      } catch (permissionError: any) {
-        console.error('Error checking billing permissions:', permissionError);
-        let errorMessage = 'Failed to verify billing permissions.';
-        if (permissionError.message) {
-          errorMessage += ` Error: ${permissionError.message}`;
-        }
-        setCreateProjectError(errorMessage);
-        
-        // Clean up the project since permission check failed
+      // We've already verified billing permissions when the page loaded
+      // Check hasLinkPermission to ensure the user still has permission
+      if (hasLinkPermission !== true) {
+        console.error('Billing link permission is not granted. Aborting project linking.');
+        setCreateProjectError('Billing permission not granted. Please ensure your account has the necessary permissions.');
+        // Clean up the project
         await cleanupFailedProject(accessToken || '', createdProjectId, 'billing permission check failure');
         setIsCreatingProject(false);
         return;
       }
+      setCreationProgress(75);
+      console.log('User has the required billing permissions (verified on page load)');
       
       // 4. Link the project to billing account
+      setCurrentCreationStep(`Linking project to billing account...`);
       console.log(`Linking project ${newProjectId} to billing account ${decodedBillingAccountName}...`);
       try {
         await linkBillingAccount(
@@ -471,6 +534,8 @@ const ProjectsListPage: React.FC = () => {
           newProjectId,
           decodedBillingAccountName
         );
+        setCreationProgress(100);
+        setCurrentCreationStep(`Project setup complete!`);
         console.log(`Successfully linked project ${newProjectId} to billing account ${decodedBillingAccountName}`);
       } catch (billingError: any) {
         console.error('Billing account link failed:', billingError);
@@ -496,31 +561,12 @@ const ProjectsListPage: React.FC = () => {
       setOpenCreateProjectDialog(false);
       setNewProjectId('');
       
-      // Refresh the projects list to include the new project
+      // Start polling for the project to appear in the project list
       console.log('Refreshing project list...');
       if (accessToken && decodedBillingAccountName) {
         setLoading(true);
-        const projectBillingInfoList = await listProjectsForBillingAccount(
-          accessToken, 
-          decodedBillingAccountName
-        );
-        
-        // Extract project IDs
-        const projectIds = projectBillingInfoList
-          .filter((info: ProjectBillingInfo) => info.billingEnabled)
-          .map((info: ProjectBillingInfo) => {
-            const parts = info.name.split('/');
-            return parts.length > 1 ? parts[1] : '';
-          })
-          .filter(id => id);
-        
-        const allProjects = await listProjects(accessToken);
-        const filteredProjects = allProjects.filter(project => 
-          projectIds.includes(project.projectId)
-        );
-        
-        setProjects(filteredProjects);
-        setLoading(false);
+        setPollingProjectId(newProjectId);
+        setIsPollingForProject(true);
         console.log('Project list refreshed successfully');
       }
       
@@ -538,8 +584,13 @@ const ProjectsListPage: React.FC = () => {
 
   if (loading) {
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '300px' }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: '300px' }}>
         <CircularProgress />
+        {isPollingForProject && pollingProjectId && (
+          <Typography sx={{ mt: 2 }}>
+            Waiting for project "{pollingProjectId}" to appear in the list... This may take a moment.
+          </Typography>
+        )}
       </Box>
     );
   }
@@ -647,6 +698,19 @@ const ProjectsListPage: React.FC = () => {
                     <Typography color="error" variant="body2" sx={{ mt: 1 }}>
                       {createProjectError}
                     </Typography>
+                  )}
+                  
+                  {isCreatingProject && (
+                    <Box sx={{ width: '100%', mt: 3 }}>
+                      <Typography variant="body2" sx={{ mb: 1 }}>
+                        {currentCreationStep || 'Creating project...'}
+                      </Typography>
+                      <LinearProgress 
+                        variant="determinate" 
+                        value={creationProgress} 
+                        sx={{ height: 10, borderRadius: 5 }}
+                      />
+                    </Box>
                   )}
                 </Box>
               </DialogContent>
