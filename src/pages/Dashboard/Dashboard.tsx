@@ -11,6 +11,7 @@ import {
 } from '@mui/material';
 import { useAuth } from '../../utils/AuthContext';
 import { GCPProject, listProjects } from '../../services/projects';
+import { forceReauthentication } from '../../services/auth';
 import { GridContainer, GridItem, StyledPaper } from '../../components/PageGrids';
 
 const Dashboard: React.FC = () => {
@@ -35,7 +36,9 @@ const Dashboard: React.FC = () => {
         setError(null);
       } catch (error) {
         console.error('Error fetching projects:', error);
-        setError('Failed to load projects. Please try again later.');
+        // Instead of showing error message, force re-authentication
+        await forceReauthentication();
+        return; // Exit the function after forcing re-authentication
       } finally {
         setLoading(false);
       }

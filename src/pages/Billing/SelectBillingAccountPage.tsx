@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { 
   Box, 
   Typography, 
@@ -23,6 +23,11 @@ const SelectBillingAccountPage: React.FC = () => {
   const [selectedBillingAccount, setSelectedBillingAccount] = useState<BillingAccount | null>(null);
   const [hasClickedCreateBilling, setHasClickedCreateBilling] = useState<boolean>(false);
 
+  // Use a ref to track the token used for the last successful fetch
+  const lastFetchedTokenRef = useRef<string | null>(null);
+  // Use a ref to track if a fetch is currently in progress
+  const isFetchingRef = useRef<boolean>(false);
+
   useEffect(() => {
     const fetchBillingAccounts = async () => {
       if (!accessToken) {
@@ -30,20 +35,37 @@ const SelectBillingAccountPage: React.FC = () => {
         return;
       }
       
+      // Prevent fetch if already loading or if the token hasn't changed and we already have data
+      if (isFetchingRef.current) {
+        console.log('Fetch already in progress, skipping duplicate fetch request');
+        return;
+      }
+      
+      if (billingAccounts.length > 0 && accessToken === lastFetchedTokenRef.current) {
+        console.log('SelectBillingAccountPage: Billing accounts already loaded with this token. Skipping fetch.');
+        return;
+      }
+      
+      // Set our fetching ref to true to prevent concurrent fetches
+      isFetchingRef.current = true;
       console.log('Fetching billing accounts with permission...');
-      console.log('Access Token being used by app:', accessToken);
+      
       try {
         setLoading(true);
         const accountsList = await getBillingAccountsWithCreatePermission(accessToken);
         // Filter to only include open billing accounts
         const openAccounts = accountsList.filter(account => account.open);
         setBillingAccounts(openAccounts);
+        // Update our reference to the current token after a successful fetch
+        lastFetchedTokenRef.current = accessToken;
         setError(null);
       } catch (error) {
         console.error('Error fetching billing accounts:', error);
         setError('Failed to load billing accounts. Please try again later.');
       } finally {
         setLoading(false);
+        // Reset our fetching flag when the operation completes
+        isFetchingRef.current = false;
       }
     };
 

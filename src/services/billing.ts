@@ -50,7 +50,6 @@ export const listBillingAccounts = async (accessToken: string): Promise<BillingA
   try {
     // Optional debug - log token info for debugging
     const tokenInfo = await getTokenInfo(accessToken);
-    console.log('Token info used for billing API:', tokenInfo);
     
     const response = await fetch('https://cloudbilling.googleapis.com/v1/billingAccounts', {
       method: 'GET',

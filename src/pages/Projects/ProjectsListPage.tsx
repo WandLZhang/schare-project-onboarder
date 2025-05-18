@@ -191,6 +191,19 @@ const ProjectsListPage: React.FC = () => {
     verifyBillingPermissions();
   }, [accessToken, decodedBillingAccountName]);
 
+  // Force re-authentication when permissions are missing
+  useEffect(() => {
+    const handleMissingPermissions = async () => {
+      // If we've verified permissions and user lacks linking permission, force re-authentication
+      if (hasVerifiedPermissions && hasLinkPermission === false) {
+        console.log('User lacks billing account permissions. Forcing re-authentication...');
+        await forceReauthentication();
+      }
+    };
+    
+    handleMissingPermissions();
+  }, [hasVerifiedPermissions, hasLinkPermission]);
+
   // Track if we've already fetched projects for this billing account
   const [hasFetchedProjects, setHasFetchedProjects] = useState<string | null>(null);
   
@@ -256,7 +269,9 @@ const ProjectsListPage: React.FC = () => {
         setError(null);
       } catch (error) {
         console.error('Error fetching projects:', error);
-        setError('Failed to load projects. Please try again later.');
+        // Instead of showing error message, force re-authentication
+        await forceReauthentication();
+        return; // Exit the function after forcing re-authentication
       } finally {
         setLoading(false);
       }
@@ -424,11 +439,13 @@ const ProjectsListPage: React.FC = () => {
         const hasPermission = permissions.includes('billing.resourceAssociations.create');
         if (!hasPermission) {
           console.error('User lacks billing.resourceAssociations.create permission');
-          setCreateProjectError(`You don't have permission to link this project to the billing account. You need the 'billing.resourceAssociations.create' permission on ${decodedBillingAccountName}.`);
-          
           // Clean up the project since the user can't link billing
           await cleanupFailedProject(accessToken || '', createdProjectId, 'billing permission check failure');
           setIsCreatingProject(false);
+          
+          // Force re-authentication instead of showing error message
+          console.log('Permissions issue detected during project creation. Forcing re-authentication...');
+          await forceReauthentication();
           return;
         }
         console.log('User has the required billing permissions');
@@ -590,98 +607,7 @@ const ProjectsListPage: React.FC = () => {
                 Create New Project
               </Button>
               
-              {hasVerifiedPermissions && hasLinkPermission === false && (
-                <Box sx={{ mt: 2 }}>
-                  <Paper sx={{ p: 2, bgcolor: 'warning.light' }}>
-                    <Typography variant="body2" sx={{ mb: 1 }}>
-                      You don't have permission to link projects to this billing account.
-                      You need the "Billing Account Administrator" or "Billing Account User" IAM role.
-                      {/* No longer showing email sensitivity warnings */}
-                    </Typography>
-                    
-                    <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                      <Button 
-                        variant="outlined" 
-                        color="primary" 
-                        onClick={handleOpenIamHelp}
-                        size="small"
-                      >
-                        Open Billing Account Permissions
-                      </Button>
-                      
-                      <Button
-                        variant="outlined"
-                        color="info"
-                        size="small"
-                        onClick={fetchBillingAdministrators}
-                        disabled={adminStatus.loadingAdmins}
-                      >
-                        {adminStatus.loadingAdmins ? 'Loading...' : 'List Administrators'}
-                      </Button>
-                      
-                      {adminStatus.isAdmin && (
-                        <Button
-                          variant="outlined"
-                          color="success"
-                          size="small"
-                          onClick={() => {}}
-                          disabled
-                        >
-                          Admin ✓
-                        </Button>
-                      )}
-                    </Box>
-                    
-                    {/* Display the administrators */}
-                    {adminStatus.showAdmins && (
-                      <Box sx={{ mt: 2, bgcolor: '#f8f9fa', p: 1, borderRadius: 1 }}>
-                        <Typography variant="subtitle2" gutterBottom>
-                          Billing Account Administrators:
-                        </Typography>
-                        
-                        {adminStatus.loadingAdmins ? (
-                          <CircularProgress size={20} />
-                        ) : adminStatus.billingAdmins.length > 0 ? (
-                          <Box component="ul" sx={{ m: 0, pl: 2 }}>
-                            {adminStatus.billingAdmins.map((admin, index) => {
-                              // Extract email from "user:email@example.com" format
-                              const email = admin.startsWith('user:') ? admin.substring(5) : admin;
-                              
-                              // Check if this admin matches the current user's email
-                              const isCurrentUser = adminStatus.userEmail && 
-                                admin.toLowerCase() === `user:${adminStatus.userEmail}`.toLowerCase();
-                              
-                              return (
-                                <Box 
-                                  component="li" 
-                                  key={index}
-                                  sx={{ 
-                                    fontFamily: 'monospace', 
-                                    fontSize: '0.875rem',
-                                    color: isCurrentUser ? 'primary.main' : 'text.primary',
-                                    fontWeight: isCurrentUser ? 'bold' : 'normal'
-                                  }}
-                                >
-                                  {email}
-                                  {isCurrentUser && ' (you)'}
-                                </Box>
-                              );
-                            })}
-                          </Box>
-                        ) : (
-                          <Typography color="text.secondary">No administrators found.</Typography>
-                        )}
-                        
-                        {adminStatus.iamPolicyError && (
-                          <Typography color="error" variant="caption">
-                            {adminStatus.iamPolicyError}
-                          </Typography>
-                        )}
-                      </Box>
-                    )}
-                  </Paper>
-                </Box>
-              )}
+              {/* The warning about permissions has been replaced with automatic re-login */}
               
               <Button
                 variant="contained"
@@ -702,12 +628,7 @@ const ProjectsListPage: React.FC = () => {
             >
               <DialogTitle>
                 Create New Google Cloud Project
-                {hasLinkPermission === false && (
-                  <Typography variant="caption" color="error" sx={{ display: 'block', mt: 1 }}>
-                    Warning: You don't have permission to link projects to this billing account.
-                    Project creation may fail.
-                  </Typography>
-                )}
+                {/* Warning message removed - we now force re-login instead */}
               </DialogTitle>
               <DialogContent>
                 <Box sx={{ my: 2 }}>
