@@ -7,6 +7,7 @@ import Login from './pages/Auth/Login';
 import Dashboard from './pages/Dashboard/Dashboard';
 import SelectBillingAccountPage from './pages/Billing/SelectBillingAccountPage';
 import ProjectsListPage from './pages/Projects/ProjectsListPage';
+import SelectServiceAccountPage from './pages/VertexAI/SelectServiceAccountPage';
 import Layout from './components/Layout';
 import { useAuth } from './utils/AuthContext';
 
@@ -117,6 +118,15 @@ function App() {
               <ProtectedRoute>
                 <Layout>
                   <div>Vertex AI Page (Coming Soon)</div>
+                </Layout>
+              </ProtectedRoute>
+            } />
+            
+            {/* Service account selection for a specific project */}
+            <Route path="/project/:projectId/service-accounts" element={
+              <ProtectedRoute>
+                <Layout>
+                  <SelectServiceAccountPage />
                 </Layout>
               </ProtectedRoute>
             } />

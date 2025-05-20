@@ -363,10 +363,9 @@ const ProjectsListPage: React.FC = () => {
 
   const handleContinue = () => {
     if (selectedProjectId) {
-      // Navigate to the next step with the selected project
+      // Navigate to the service account selection page with the selected project
       console.log('Selected project:', selectedProjectId);
-      // This would navigate to the actual next page when implemented
-      // For now, just logging the selection
+      navigate(`/project/${selectedProjectId}/service-accounts`);
     }
   };
 
