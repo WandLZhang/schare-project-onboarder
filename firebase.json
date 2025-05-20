@@ -1,7 +1,7 @@
 {
   "hosting": {
     "site": "gcp-onboarder-example",
-    "public": "public",
+    "public": "build",
     "ignore": [
       "firebase.json",
       "**/.*",
