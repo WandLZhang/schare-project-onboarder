@@ -148,6 +148,50 @@ export const enableApisForProject = async (
   }
 };
 
+// Function to list enabled services for a project
+export const listEnabledServices = async (
+  accessToken: string,
+  projectId: string
+): Promise<string[]> => {
+  try {
+    console.log(`Fetching enabled services for project ${projectId}`);
+    
+    const response = await fetch(
+      `https://serviceusage.googleapis.com/v1/projects/${projectId}/services?filter=state:ENABLED`,
+      {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`Error response when fetching enabled services:`, errorText);
+      throw new Error(
+        `Error fetching enabled services for project ${projectId}: ${response.status} ${response.statusText} - ${errorText}`
+      );
+    }
+
+    const data = await response.json();
+    // The response contains a list of service objects, each with a 'name' property
+    // like "projects/123456/services/aiplatform.googleapis.com"
+    // We want to extract the service identifier (e.g., "aiplatform.googleapis.com")
+    const enabledServices = (data.services || []).map((service: any) => {
+      const nameParts = service.name.split('/');
+      return nameParts[nameParts.length - 1] || '';
+    });
+    
+    console.log(`Enabled services for project ${projectId}:`, enabledServices);
+    return enabledServices;
+  } catch (error) {
+    console.error(`Error listing enabled services for project ${projectId}:`, error);
+    throw error;
+  }
+};
+
 // Function to delete a project
 export const deleteProject = async (
   accessToken: string,

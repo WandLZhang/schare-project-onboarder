@@ -194,6 +194,109 @@ export const grantVertexAIUserRoleToServiceAccount = async (
   }
 };
 
+// Function to get the IAM policy for a service account
+export const getServiceAccountIamPolicy = async (
+  accessToken: string,
+  projectId: string,
+  serviceAccountEmail: string
+): Promise<Policy> => {
+  try {
+    const response = await fetch(`https://iam.googleapis.com/v1/projects/${projectId}/serviceAccounts/${serviceAccountEmail}:getIamPolicy`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        options: {
+          requestedPolicyVersion: 3
+        }
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Error getting service account IAM policy: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('Error getting service account IAM policy:', error);
+    throw error;
+  }
+};
+
+// Function to set the IAM policy for a service account
+export const setServiceAccountIamPolicy = async (
+  accessToken: string,
+  projectId: string,
+  serviceAccountEmail: string,
+  policy: Policy
+): Promise<Policy> => {
+  try {
+    const response = await fetch(`https://iam.googleapis.com/v1/projects/${projectId}/serviceAccounts/${serviceAccountEmail}:setIamPolicy`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        policy: policy,
+        updateMask: 'bindings'
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Error setting service account IAM policy: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('Error setting service account IAM policy:', error);
+    throw error;
+  }
+};
+
+// Function to grant a role to a user on a specific service account
+export const grantUserRoleOnServiceAccount = async (
+  accessToken: string,
+  projectId: string,
+  serviceAccountEmail: string,
+  userEmail: string,
+  role: string // e.g., 'roles/iam.serviceAccountUser'
+): Promise<void> => {
+  try {
+    // Get the current IAM policy for the service account
+    const policy = await getServiceAccountIamPolicy(accessToken, projectId, serviceAccountEmail);
+    
+    // Find or create the binding for the specified role
+    let binding = policy.bindings?.find(b => b.role === role);
+    
+    if (binding) {
+      // Add the user to the existing binding if not already present
+      const memberKey = `user:${userEmail}`;
+      if (!binding.members?.includes(memberKey)) {
+        binding.members = [...(binding.members || []), memberKey];
+      }
+    } else {
+      // Create a new binding for the role
+      const newBinding = {
+        role: role,
+        members: [`user:${userEmail}`]
+      };
+      
+      policy.bindings = [...(policy.bindings || []), newBinding];
+    }
+    
+    // Update the IAM policy for the service account
+    await setServiceAccountIamPolicy(accessToken, projectId, serviceAccountEmail, policy);
+  } catch (error) {
+    console.error(`Error granting ${role} to user ${userEmail}:`, error);
+    throw error;
+  }
+};
+
 // Function to list service accounts with the Vertex AI User role
 export const listServiceAccountsWithVertexAIRole = async (
   accessToken: string,

@@ -25,7 +25,8 @@ import {
   checkProjectIdAvailability,
   enableApisForProject,
   deleteProject,
-  ESSENTIAL_APIS
+  ESSENTIAL_APIS,
+  listEnabledServices
 } from '../../services/projects';
 import { 
   listProjectsForBillingAccount, 
@@ -72,6 +73,9 @@ const ProjectsListPage: React.FC = () => {
   // State for project polling - check if newly created project appears in the list
   const [isPollingForProject, setIsPollingForProject] = useState<boolean>(false);
   const [pollingProjectId, setPollingProjectId] = useState<string | null>(null);
+  // State for API checking and enabling
+  const [isCheckingApis, setIsCheckingApis] = useState<boolean>(false);
+  const [apiCheckError, setApiCheckError] = useState<string | null>(null);
   const [adminStatus, setAdminStatus] = useState<{
     isAdmin: boolean;
     userEmail: string | null;
@@ -361,11 +365,73 @@ const ProjectsListPage: React.FC = () => {
     setSelectedProjectId(projectId);
   };
 
-  const handleContinue = () => {
-    if (selectedProjectId) {
-      // Navigate to the service account selection page with the selected project
-      console.log('Selected project:', selectedProjectId);
-      navigate(`/project/${selectedProjectId}/service-accounts`);
+  const handleContinue = async () => {
+    if (selectedProjectId && accessToken) {
+      setIsCheckingApis(true);
+      setApiCheckError(null); // Clear previous errors
+      setCurrentCreationStep(''); // Reset step message
+      setCreationProgress(0); // Reset progress bar
+
+      try {
+        console.log(`Checking APIs for project: ${selectedProjectId}`);
+        setCurrentCreationStep(`Checking required APIs for project ${selectedProjectId}...`);
+        
+        // Get list of currently enabled services for the project
+        const enabledServices = await listEnabledServices(accessToken, selectedProjectId);
+        
+        // Identify which essential APIs are missing
+        const missingApis = ESSENTIAL_APIS.filter(
+          (api) => !enabledServices.includes(api)
+        );
+
+        if (missingApis.length > 0) {
+          console.log(`Missing APIs for project ${selectedProjectId}:`, missingApis);
+          setCurrentCreationStep(`Enabling required APIs for project ${selectedProjectId}...`);
+          setCreationProgress(25); // Start progress
+          
+          try {
+            // Enable the missing APIs
+            await enableApisForProject(accessToken, selectedProjectId, missingApis);
+            setCreationProgress(100); // Mark as complete
+            setCurrentCreationStep(`APIs enabled successfully.`);
+            console.log(`Successfully enabled missing APIs for project ${selectedProjectId}`);
+          } catch (apiError: any) {
+            console.error('API enablement failed:', apiError);
+            let errorMessage = 'Failed to enable required APIs.';
+            if (apiError.message) {
+              errorMessage += ` Error: ${apiError.message}`;
+            }
+            setApiCheckError(errorMessage);
+            setIsCheckingApis(false);
+            return; // Exit early on error
+          }
+        } else {
+          console.log(`All essential APIs are already enabled for project ${selectedProjectId}`);
+          setCreationProgress(100); // Mark as complete
+          setCurrentCreationStep(`All required APIs are already enabled.`);
+        }
+        
+        // Short delay to show completion message before navigating
+        setTimeout(() => {
+          // Navigate to the service account selection page with the selected project
+          console.log('Navigating to service account selection for project:', selectedProjectId);
+          navigate(`/project/${selectedProjectId}/service-accounts`);
+        }, 1000);
+
+      } catch (error: any) {
+        console.error(`Error during API check/enablement for project ${selectedProjectId}:`, error);
+        let errorMessage = 'Failed to verify or enable required APIs.';
+        if (error.message) {
+          errorMessage += ` Error: ${error.message}`;
+        }
+        setApiCheckError(errorMessage);
+      } finally {
+        // We'll keep isCheckingApis true until navigation occurs
+        // This prevents multiple clicks on the Continue button
+        setTimeout(() => {
+          setIsCheckingApis(false);
+        }, 1500);
+      }
     }
   };
 
@@ -659,14 +725,35 @@ const ProjectsListPage: React.FC = () => {
               
               {/* The warning about permissions has been replaced with automatic re-login */}
               
-              <Button
-                variant="contained"
-                color="primary"
-                disabled={!selectedProjectId}
-                onClick={handleContinue}
-              >
-                Continue
-              </Button>
+              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+                {apiCheckError && (
+                  <Typography color="error" variant="body2" sx={{ mb: 1 }}>
+                    {apiCheckError}
+                  </Typography>
+                )}
+                
+                {isCheckingApis && (
+                  <Box sx={{ width: '100%', mb: 2 }}>
+                    <Typography variant="body2" sx={{ mb: 0.5 }}>
+                      {currentCreationStep}
+                    </Typography>
+                    <LinearProgress 
+                      variant="determinate" 
+                      value={creationProgress} 
+                      sx={{ height: 6, borderRadius: 3, width: 250 }}
+                    />
+                  </Box>
+                )}
+                
+                <Button
+                  variant="contained"
+                  color="primary"
+                  disabled={!selectedProjectId || isCheckingApis}
+                  onClick={handleContinue}
+                >
+                  {isCheckingApis ? 'Processing...' : 'Continue'}
+                </Button>
+              </Box>
             </Box>
 
             {/* Create Project Dialog */}
